@@ -1,0 +1,17 @@
+[project]
+name = "csv-mapper"
+version = "0.1.0"
+description = "Map/transform CSV columns including concatenations and constants."
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",
+    "Flask>=3.0.0",
+    "woocommerce>=3.0.0",
+    "python-dotenv>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pandas>=2.0.0"
+]
+
+[project.scripts]
+csv-mapper = "csv_mapper:main"
+

@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  jamac-updater:
+    build: .
+    container_name: jamac-product-updater
+    ports:
+      - "5001:5001"
+    environment:
+      - WOOCOMMERCE_URL=${WOOCOMMERCE_URL}
+      - WOOCOMMERCE_CONSUMER_KEY=${WOOCOMMERCE_CONSUMER_KEY}
+      - WOOCOMMERCE_CONSUMER_SECRET=${WOOCOMMERCE_CONSUMER_SECRET}
+    volumes:
+      # Mount the mapping file so you can edit it without rebuilding
+      - ./mapping.yaml:/app/mapping.yaml:ro
+      # Optional: mount .env file (alternative to environment variables above)
+      # - ./.env:/app/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

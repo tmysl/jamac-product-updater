@@ -1,0 +1,24 @@
+Categories: Category
+SKU: Code
+Name:
+  - Brand
+  - Description
+Description: Description
+Tags: Tags
+Short Description: Extended Description
+Tags (Space Seperated):
+  - Brand
+  - Tags
+  - Description
+  - Extended Description
+  - VIN
+Attribute 1 name: key(Brand)
+Attribute 1 value(s): Brand
+Attribute 2 name: key(Pack)
+Attribute 2 value(s): Pack
+Attribute 3 name: key(Special Order)
+Attribute 3 value(s): S/O?
+Attribute 4 name: key(Code)
+Attribute 4 value(s): Code
+Attribute 5 name: key(MFR Code)
+Attribute 5 value(s): VIN
