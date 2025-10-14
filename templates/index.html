@@ -500,10 +500,15 @@
                 const form = document.querySelector('form');
                 if (action === 'csv') {
                     form.action = '/transform';
+                    form.submit();
                 } else {
+                    // Show loading for WooCommerce updates
                     form.action = '/update-woocommerce';
+                    const btn = event.target;
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner"></span> Processing...';
+                    form.submit();
                 }
-                form.submit();
             }
 
             // Backup progress handling

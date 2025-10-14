@@ -42,8 +42,16 @@ backup_progress = {
     'error': None
 }
 
+# Global cache for categories and tags
+_category_cache = {}
+_tag_cache = {}
+_cache_lock = threading.Lock()
+
 ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls', 'yaml', 'yml', 'json'}
 DEFAULT_MAPPING_PATH = os.path.join(os.path.dirname(__file__), 'mapping.yaml')
+CACHE_DIR = os.path.join(os.path.dirname(__file__), '.cache')
+CATEGORY_CACHE_FILE = os.path.join(CACHE_DIR, 'categories.json')
+TAG_CACHE_FILE = os.path.join(CACHE_DIR, 'tags.json')
 
 def convert_excel_to_csv(excel_path, csv_path):
     """Convert Excel file to CSV"""
@@ -81,6 +89,184 @@ def woocommerce_configured():
         os.getenv('WOOCOMMERCE_CONSUMER_KEY'),
         os.getenv('WOOCOMMERCE_CONSUMER_SECRET')
     ])
+
+def save_cache_to_file(data, filepath):
+    """Save cache data to JSON file"""
+    try:
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to save cache to {filepath}: {e}", file=sys.stderr)
+        return False
+
+def load_cache_from_file(filepath):
+    """Load cache data from JSON file"""
+    try:
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"Warning: Failed to load cache from {filepath}: {e}", file=sys.stderr)
+    return {}
+
+def fetch_all_categories(wcapi):
+    """Fetch all WooCommerce categories and return name->id mapping"""
+    try:
+        all_categories = []
+        page = 1
+        per_page = 100
+
+        print(f"Fetching categories from WooCommerce...", flush=True)
+        while True:
+            response = wcapi.get("products/categories", params={"per_page": per_page, "page": page})
+            if response.status_code != 200:
+                print(f"Warning: Failed to fetch categories (status {response.status_code})", file=sys.stderr)
+                break
+
+            categories = response.json()
+            if not categories:
+                break
+
+            all_categories.extend(categories)
+            print(f"  Fetched {len(all_categories)} categories so far...", flush=True)
+            page += 1
+
+        # Build name -> id mapping (case-insensitive)
+        mapping = {}
+        for cat in all_categories:
+            cat_name = cat.get('name', '').strip()
+            cat_id = cat.get('id')
+            if cat_name and cat_id:
+                # Store both original case and lowercase for matching
+                mapping[cat_name] = cat_id
+                mapping[cat_name.lower()] = cat_id
+
+        print(f"Successfully fetched {len(all_categories)} categories", flush=True)
+        # Save to cache file
+        save_cache_to_file(mapping, CATEGORY_CACHE_FILE)
+        return mapping
+    except Exception as e:
+        print(f"Warning: Failed to fetch categories: {e}", file=sys.stderr)
+        return {}
+
+def fetch_all_tags(wcapi):
+    """Fetch all WooCommerce tags and return name->id mapping"""
+    try:
+        all_tags = []
+        page = 1
+        per_page = 100
+
+        print(f"Fetching tags from WooCommerce...", flush=True)
+        while True:
+            response = wcapi.get("products/tags", params={"per_page": per_page, "page": page})
+            if response.status_code != 200:
+                print(f"Warning: Failed to fetch tags (status {response.status_code})", file=sys.stderr)
+                break
+
+            tags = response.json()
+            if not tags:
+                break
+
+            all_tags.extend(tags)
+            if page % 10 == 0:  # Print every 10 pages to avoid spam
+                print(f"  Fetched {len(all_tags)} tags so far...", flush=True)
+            page += 1
+
+        # Build name -> id mapping (case-insensitive)
+        mapping = {}
+        for tag in all_tags:
+            tag_name = tag.get('name', '').strip()
+            tag_id = tag.get('id')
+            if tag_name and tag_id:
+                # Store both original case and lowercase for matching
+                mapping[tag_name] = tag_id
+                mapping[tag_name.lower()] = tag_id
+
+        print(f"Successfully fetched {len(all_tags)} tags", flush=True)
+        # Save to cache file
+        save_cache_to_file(mapping, TAG_CACHE_FILE)
+        return mapping
+    except Exception as e:
+        print(f"Warning: Failed to fetch tags: {e}", file=sys.stderr)
+        return {}
+
+def initialize_cache():
+    """Initialize category and tag cache from files or API"""
+    global _category_cache, _tag_cache
+
+    if not woocommerce_configured():
+        print("WooCommerce not configured, skipping cache initialization", flush=True)
+        return
+
+    print("Initializing WooCommerce cache...", flush=True)
+
+    # Try loading from cache files first
+    _category_cache = load_cache_from_file(CATEGORY_CACHE_FILE)
+    _tag_cache = load_cache_from_file(TAG_CACHE_FILE)
+
+    # If cache files don't exist or are empty, fetch from API
+    if not _category_cache or not _tag_cache:
+        wcapi = get_woocommerce_api()
+        if wcapi:
+            if not _category_cache:
+                print("Category cache not found, fetching from API...", flush=True)
+                _category_cache = fetch_all_categories(wcapi)
+            else:
+                print(f"Loaded {len(_category_cache) // 2} categories from cache", flush=True)
+
+            if not _tag_cache:
+                print("Tag cache not found, fetching from API...", flush=True)
+                _tag_cache = fetch_all_tags(wcapi)
+            else:
+                print(f"Loaded {len(_tag_cache) // 2} tags from cache", flush=True)
+    else:
+        print(f"Loaded {len(_category_cache) // 2} categories and {len(_tag_cache) // 2} tags from cache", flush=True)
+
+    print("Cache initialization complete!", flush=True)
+
+def get_category_ids(wcapi, category_names):
+    """Convert category names to IDs using pre-loaded cache"""
+    global _category_cache, _cache_lock
+
+    result = []
+    for name in category_names:
+        name = name.strip()
+        if not name:
+            continue
+
+        # Check cache (try exact match first, then case-insensitive)
+        with _cache_lock:
+            cat_id = _category_cache.get(name) or _category_cache.get(name.lower())
+
+        if cat_id:
+            result.append({'id': cat_id})
+        else:
+            print(f"Warning: Category '{name}' not found in cache, skipping", file=sys.stderr)
+
+    return result
+
+def get_tag_ids(wcapi, tag_names):
+    """Convert tag names to IDs using pre-loaded cache"""
+    global _tag_cache, _cache_lock
+
+    result = []
+    for name in tag_names:
+        name = name.strip()
+        if not name:
+            continue
+
+        # Check cache (try exact match first, then case-insensitive)
+        with _cache_lock:
+            tag_id = _tag_cache.get(name) or _tag_cache.get(name.lower())
+
+        if tag_id:
+            result.append({'id': tag_id})
+        else:
+            print(f"Warning: Tag '{name}' not found in cache, skipping", file=sys.stderr)
+
+    return result
 
 def normalize_text_for_comparison(text):
     """Normalize text for comparison by removing HTML tags and decoding entities"""
@@ -393,6 +579,64 @@ def download_backup(filename):
         mimetype='text/csv'
     )
 
+@app.route('/api/categories')
+def api_categories():
+    """API endpoint to view all categories"""
+    if not woocommerce_configured():
+        return jsonify({'error': 'WooCommerce not configured'}), 400
+
+    global _category_cache
+
+    # Convert to list format for easier viewing
+    result = []
+    seen = set()
+    for name, cat_id in _category_cache.items():
+        if cat_id not in seen:
+            result.append({'id': cat_id, 'name': name})
+            seen.add(cat_id)
+
+    return jsonify(sorted(result, key=lambda x: x['id']))
+
+@app.route('/api/tags')
+def api_tags():
+    """API endpoint to view all tags"""
+    if not woocommerce_configured():
+        return jsonify({'error': 'WooCommerce not configured'}), 400
+
+    global _tag_cache
+
+    # Convert to list format for easier viewing
+    result = []
+    seen = set()
+    for name, tag_id in _tag_cache.items():
+        if tag_id not in seen:
+            result.append({'id': tag_id, 'name': name})
+            seen.add(tag_id)
+
+    return jsonify(sorted(result, key=lambda x: x['id']))
+
+@app.route('/api/refresh-cache', methods=['POST'])
+def refresh_cache():
+    """Manually refresh the category and tag cache"""
+    if not woocommerce_configured():
+        return jsonify({'error': 'WooCommerce not configured'}), 400
+
+    global _category_cache, _tag_cache
+
+    try:
+        wcapi = get_woocommerce_api()
+        _category_cache = fetch_all_categories(wcapi)
+        _tag_cache = fetch_all_tags(wcapi)
+
+        return jsonify({
+            'success': True,
+            'categories': len(_category_cache) // 2,
+            'tags': len(_tag_cache) // 2,
+            'message': 'Cache refreshed successfully'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/update-woocommerce', methods=['POST'])
 def update_woocommerce():
     """Update WooCommerce products directly via API"""
@@ -522,19 +766,22 @@ def update_woocommerce():
 
                         # Handle special WooCommerce fields that need specific formats
                         if key.lower() == 'categories':
-                            # Categories need to be an array of objects with name
+                            # Categories need to be an array of objects with ID
                             # Only include if there are actual categories, otherwise omit entirely
                             if value and value.strip():
                                 categories = [cat.strip() for cat in value.split(',') if cat.strip()]
                                 if categories:
-                                    product_data['categories'] = [{'name': cat} for cat in categories]
+                                    # Store category names for now, will convert to IDs later
+                                    product_data['categories'] = categories
                         elif key.lower() == 'tags':
-                            # Tags need to be an array of objects with name
+                            # Tags need to be an array of objects with ID
                             # Only include if there are actual tags, otherwise omit entirely
                             if value and value.strip():
-                                tags = [tag.strip() for tag in value.split(',') if tag.strip()]
+                                # Split by spaces (tags are space-separated)
+                                tags = [tag.strip() for tag in value.split() if tag.strip()]
                                 if tags:
-                                    product_data['tags'] = [{'name': tag} for tag in tags]
+                                    # Store tag names for now, will convert to IDs later
+                                    product_data['tags'] = tags
                         elif 'attribute' in key.lower() and 'name' in key.lower():
                             # Extract attribute number (e.g., "Attribute 1 name" -> "1")
                             import re
@@ -573,6 +820,12 @@ def update_woocommerce():
                     if attributes:
                         product_data['attributes'] = attributes
 
+                    # Convert category and tag names to IDs
+                    if 'categories' in product_data and isinstance(product_data['categories'], list):
+                        product_data['categories'] = get_category_ids(wcapi, product_data['categories'])
+                    if 'tags' in product_data and isinstance(product_data['tags'], list):
+                        product_data['tags'] = get_tag_ids(wcapi, product_data['tags'])
+
                     # Find product by SKU
                     try:
                         print(f"Looking up product with SKU: {sku}")
@@ -609,10 +862,12 @@ def update_woocommerce():
 
                             # Handle different field types
                             if key in ['categories', 'tags']:
-                                # Compare list of objects
-                                current_names = [item.get('name', '') for item in (current_value if isinstance(current_value, list) else [])]
-                                new_names = [item.get('name', '') for item in (new_value if isinstance(new_value, list) else [])]
-                                if sorted(current_names) != sorted(new_names):
+                                # Compare list of objects by ID
+                                current_ids = sorted([item.get('id', 0) for item in (current_value if isinstance(current_value, list) else [])])
+                                new_ids = sorted([item.get('id', 0) for item in (new_value if isinstance(new_value, list) else [])])
+                                if current_ids != new_ids:
+                                    current_names = [item.get('name', '') for item in (current_value if isinstance(current_value, list) else [])]
+                                    new_names = [item.get('name', '') for item in (new_value if isinstance(new_value, list) else [])]
                                     differences.append(f"  {key}: '{','.join(current_names)}' -> '{','.join(new_names)}'")
                             elif key == 'attributes':
                                 # Compare attributes
@@ -691,4 +946,6 @@ def update_woocommerce():
         return redirect(url_for('index'))
 
 if __name__ == '__main__':
+    # Initialize cache on startup
+    initialize_cache()
     app.run(debug=True, host='0.0.0.0', port=5001)
