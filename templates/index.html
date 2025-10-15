@@ -268,6 +268,91 @@
             color: #166534;
             border: 1px solid #bbf7d0;
         }
+
+        .alert-info {
+            background: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #bfdbfe;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        /* Progress Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-header {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #333;
+        }
+
+        .progress-bar-container {
+            background: #e5e7eb;
+            border-radius: 8px;
+            height: 30px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        .progress-bar {
+            background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);
+            height: 100%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .progress-message {
+            color: #666;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #dc2626;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
     <script>
         function toggleMappingUpload() {
@@ -308,7 +393,7 @@
             {% if messages %}
                 <div class="flash-messages">
                     {% for category, message in messages %}
-                        <div class="alert {% if category == 'success' %}alert-success{% endif %}">{{ message }}</div>
+                        <div class="alert {% if category == 'success' %}alert-success{% elif category == 'info' %}alert-info{% endif %}">{{ message }}</div>
                     {% endfor %}
                 </div>
             {% endif %}
@@ -369,6 +454,13 @@
                 </label>
             </div>
 
+            <div class="checkbox-group">
+                <label>
+                    <input type="checkbox" id="dry_run" name="dry_run">
+                    Dry Run (preview changes without updating WooCommerce)
+                </label>
+            </div>
+
             <div class="button-group">
                 <button type="button" onclick="submitForm('csv')" class="btn-secondary">Download CSV</button>
                 {% if woo_configured %}
@@ -379,16 +471,126 @@
             </div>
         </form>
 
+        {% if woo_configured %}
+        <form id="backupForm" action="/backup-products" method="POST" style="margin-top: 20px;">
+            <button type="submit" class="btn-secondary" style="width: 100%;">
+                Backup All Products
+            </button>
+        </form>
+        {% endif %}
+
+        <!-- Progress Modal -->
+        <div id="progressModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <span class="spinner"></span>
+                    Backing Up Products...
+                </div>
+                <div class="progress-bar-container">
+                    <div id="progressBar" class="progress-bar" style="width: 0%;">
+                        <span id="progressPercent">0%</span>
+                    </div>
+                </div>
+                <div id="progressMessage" class="progress-message">Initializing...</div>
+            </div>
+        </div>
+
         <script>
             function submitForm(action) {
                 const form = document.querySelector('form');
                 if (action === 'csv') {
                     form.action = '/transform';
+                    form.submit();
                 } else {
+                    // Show loading for WooCommerce updates
                     form.action = '/update-woocommerce';
+                    const btn = event.target;
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner"></span> Processing...';
+                    form.submit();
                 }
-                form.submit();
             }
+
+            // Backup progress handling
+            {% if woo_configured %}
+            const backupForm = document.getElementById('backupForm');
+            const progressModal = document.getElementById('progressModal');
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressMessage = document.getElementById('progressMessage');
+
+            backupForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                // Show progress modal
+                progressModal.classList.add('active');
+                progressBar.style.width = '0%';
+                progressPercent.textContent = '0%';
+                progressMessage.textContent = 'Starting backup...';
+
+                // Start the backup
+                fetch('/start-backup', {
+                    method: 'POST'
+                }).then(response => response.json())
+                  .then(data => {
+                      if (data.status === 'started') {
+                          // Connect to SSE endpoint to monitor progress
+                          const eventSource = new EventSource('/backup-progress');
+
+                          eventSource.onmessage = function(event) {
+                              const data = JSON.parse(event.data);
+
+                              // Update progress display
+                              progressMessage.textContent = data.message;
+
+                              // Calculate progress percentage
+                              let percent = 0;
+                              if (data.status === 'fetching') {
+                                  // Estimate based on products (assumes ~1000 products max)
+                                  percent = Math.min(80, Math.floor((data.total_products / 1000) * 80));
+                              } else if (data.status === 'writing') {
+                                  percent = 90;
+                              } else if (data.status === 'complete') {
+                                  percent = 100;
+                              }
+
+                              progressBar.style.width = percent + '%';
+                              progressPercent.textContent = percent + '%';
+
+                              if (data.status === 'complete') {
+                                  eventSource.close();
+                                  setTimeout(() => {
+                                      // Download the file
+                                      if (data.filename) {
+                                          window.location.href = '/download-backup/' + data.filename;
+                                      }
+                                      progressModal.classList.remove('active');
+                                  }, 1000);
+                              } else if (data.status === 'error') {
+                                  eventSource.close();
+                                  progressMessage.textContent = 'Error: ' + (data.error || 'Unknown error');
+                                  setTimeout(() => {
+                                      progressModal.classList.remove('active');
+                                  }, 3000);
+                              }
+                          };
+
+                          eventSource.onerror = function() {
+                              eventSource.close();
+                              progressMessage.textContent = 'Connection error. Please try again.';
+                              setTimeout(() => {
+                                  progressModal.classList.remove('active');
+                              }, 2000);
+                          };
+                      }
+                  }).catch(error => {
+                      progressMessage.textContent = 'Failed to start backup: ' + error;
+                      setTimeout(() => {
+                          progressModal.classList.remove('active');
+                      }, 2000);
+                  });
+            });
+            {% endif %}
         </script>
     </div>
 </body>
